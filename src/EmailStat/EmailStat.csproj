@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Target Windows 11 (22621 = 22H2); min supported version for Windows App SDK 1.5 is 17763 -->
+    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>EmailStat</RootNamespace>
+    <ApplicationIcon>Assets\StoreLogo.ico</ApplicationIcon>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x86;x64;arm64</Platforms>
+    <RuntimeIdentifiers>win-x86;win-x64;win-arm64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <!-- Unpackaged deployment (no MSIX) for simplicity -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Windows App SDK / WinUI 3 -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.5.240311000" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.22621.756" />
+
+    <!-- Win2D for hardware-accelerated 2D rendering (treemap) -->
+    <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.3.0" />
+
+    <!-- MVVM toolkit -->
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
+
+    <!-- Gmail API -->
+    <PackageReference Include="Google.Apis.Gmail.v1" Version="1.68.0.3420" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

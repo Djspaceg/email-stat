@@ -1,0 +1,44 @@
+<UserControl
+    x:Class="EmailStat.Controls.TreemapControl"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:canvas="using:Microsoft.Graphics.Canvas.UI.Xaml"
+    SizeChanged="OnSizeChanged">
+
+    <Grid>
+        <!--  Win2D hardware-accelerated canvas that renders the treemap  -->
+        <canvas:CanvasControl
+            x:Name="canvas"
+            CreateResources="Canvas_CreateResources"
+            Draw="Canvas_Draw"
+            PointerEntered="Canvas_PointerEntered"
+            PointerExited="Canvas_PointerExited"
+            PointerMoved="Canvas_PointerMoved"
+            PointerPressed="Canvas_PointerPressed" />
+
+        <!--  Floating tooltip, positioned in code-behind via RenderTransform  -->
+        <Border
+            x:Name="tooltipBorder"
+            HorizontalAlignment="Left"
+            VerticalAlignment="Top"
+            Background="{ThemeResource SystemControlBackgroundChromeMediumBrush}"
+            BorderBrush="{ThemeResource SystemControlForegroundBaseMediumBrush}"
+            BorderThickness="1"
+            CornerRadius="4"
+            IsHitTestVisible="False"
+            Opacity="0.95"
+            Padding="10,6"
+            Visibility="Collapsed">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="tooltipTransform" />
+            </Border.RenderTransform>
+            <StackPanel Spacing="2">
+                <TextBlock
+                    x:Name="tooltipTitle"
+                    FontWeight="SemiBold"
+                    Style="{ThemeResource CaptionTextBlockStyle}" />
+                <TextBlock x:Name="tooltipCount" Style="{ThemeResource CaptionTextBlockStyle}" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>
