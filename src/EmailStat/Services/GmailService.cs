@@ -57,8 +57,22 @@ public sealed partial class GmailService
     /// Opens the system browser for the Google consent screen on first run.
     /// Tokens are cached in <c>%LOCALAPPDATA%\EmailStat\token\</c> for subsequent runs.
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when the OAuth credentials are still set to the placeholder values.
+    /// Fill in <see cref="OAuthClientId"/> and <see cref="OAuthClientSecret"/> before building.
+    /// </exception>
     public async Task AuthenticateAsync(CancellationToken ct = default)
     {
+        if (OAuthClientId == "YOUR_CLIENT_ID.apps.googleusercontent.com" ||
+            OAuthClientSecret == "YOUR_CLIENT_SECRET")
+        {
+            throw new InvalidOperationException(
+                "OAuth credentials are not configured. " +
+                "Register this app in Google Cloud Console, then fill in " +
+                "OAuthClientId and OAuthClientSecret in GmailService.cs. " +
+                "See the README for step-by-step setup instructions.");
+        }
+
         var secrets = new ClientSecrets
         {
             ClientId     = OAuthClientId,
@@ -88,8 +102,10 @@ public sealed partial class GmailService
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Fetches up to <paramref name="maxMessages"/> messages, extracts the From header,
-    /// and returns groups sorted by email count descending.
+    /// Fetches up to <paramref name="maxMessages"/> messages from the user's <b>Inbox</b>,
+    /// extracts the From header, and returns groups sorted by email count descending.
+    /// Only messages with the INBOX label are counted; sent, archived, and spam messages
+    /// are excluded so the treemap reflects actual inbox composition.
     /// </summary>
     /// <param name="groupByDomain">
     ///   When <c>true</c> groups by sender domain; when <c>false</c> groups by exact address.
@@ -116,6 +132,7 @@ public sealed partial class GmailService
             var listReq = _svc!.Users.Messages.List("me");
             listReq.PageToken = pageToken;
             listReq.MaxResults = Math.Min(500, maxMessages - fetched);
+            listReq.LabelIds = ["INBOX"];
             listReq.Fields = "nextPageToken,messages(id)";
 
             ListMessagesResponse listResp = await listReq.ExecuteAsync(ct);
@@ -201,7 +218,7 @@ public sealed partial class GmailService
     private static IReadOnlyList<EmailGroup> BuildDomainGroups(
         ConcurrentDictionary<string, long> fromCounts)
     {
-        // Aggregate by domain
+        // Aggregate by domain — mutate the existing sub-list to avoid O(n²) allocations.
         var domains = new Dictionary<string, (long Total, List<EmailGroup> Subs)>(StringComparer.OrdinalIgnoreCase);
 
         foreach ((string addr, long count) in fromCounts)
@@ -209,18 +226,19 @@ public sealed partial class GmailService
             string domain = ExtractDomain(addr);
 
             if (!domains.TryGetValue(domain, out var entry))
+            {
                 entry = (0, []);
+                domains[domain] = entry;
+            }
 
-            domains[domain] = (
-                entry.Total + count,
-                [.. entry.Subs, new EmailGroup
-                {
-                    Key = addr,
-                    DisplayName = addr,
-                    EmailCount = count,
-                    IsDomain = false,
-                }]
-            );
+            entry.Subs.Add(new EmailGroup
+            {
+                Key = addr,
+                DisplayName = addr,
+                EmailCount = count,
+                IsDomain = false,
+            });
+            domains[domain] = (entry.Total + count, entry.Subs);
         }
 
         return domains

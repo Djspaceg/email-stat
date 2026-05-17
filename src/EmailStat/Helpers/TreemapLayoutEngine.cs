@@ -138,8 +138,8 @@ public static class TreemapLayoutEngine
             double dim = thickness > 0 ? areas[i] / thickness : 0;
 
             nodes[i].Bounds = horizontal
-                ? new Rect(bounds.X + offset, bounds.Y, dim, thickness)
-                : new Rect(bounds.X, bounds.Y + offset, thickness, dim);
+                ? new Rect(bounds.X, bounds.Y + offset, thickness, dim)  // left vertical strip: X fixed, Y moves
+                : new Rect(bounds.X + offset, bounds.Y, dim, thickness); // top horizontal strip: Y fixed, X moves
 
             offset += dim;
         }

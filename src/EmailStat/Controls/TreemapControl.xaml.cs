@@ -13,6 +13,7 @@ using Microsoft.UI.Xaml.Input;
 using System.Collections.Specialized;
 using System.Numerics;
 using Windows.Foundation;
+using Windows.System;
 using Windows.UI;
 
 /// <summary>
@@ -55,6 +56,13 @@ public sealed partial class TreemapControl : UserControl
     /// <summary>Pixel offset applied to the shadow pass of each label to create a drop-shadow effect.</summary>
     private const float ShadowOffsetX = 1f;
     private const float ShadowOffsetY = 1f;
+
+    /// <summary>Pixel offset of the tooltip from the cursor position.</summary>
+    private const double TooltipCursorOffset = 14;
+    /// <summary>Approximate rendered width of the tooltip, used to keep it within bounds.</summary>
+    private const double TooltipWidth = 170;
+    /// <summary>Approximate rendered height of the tooltip, used to keep it within bounds.</summary>
+    private const double TooltipHeight = 58;
 
     // -------------------------------------------------------------------------
     // Private state
@@ -286,8 +294,6 @@ public sealed partial class TreemapControl : UserControl
     // Pointer interaction
     // -------------------------------------------------------------------------
 
-    private void Canvas_PointerEntered(object sender, PointerRoutedEventArgs e) { }
-
     private void Canvas_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
         Point pos = e.GetCurrentPoint(canvas).Position;
@@ -305,9 +311,9 @@ public sealed partial class TreemapControl : UserControl
             tooltipTitle.Text = n.Label;
             tooltipCount.Text = $"{n.Value:N0} email{(n.Value == 1 ? "" : "s")}";
 
-            // Position the tooltip just below-right of the cursor, keeping it inside bounds.
-            double tx = Math.Min(pos.X + 14, ActualWidth - 170);
-            double ty = Math.Min(pos.Y + 14, ActualHeight - 58);
+            // Position the tooltip just below-right of the cursor, clamped within visible bounds.
+            double tx = Math.Max(0, Math.Min(pos.X + TooltipCursorOffset, ActualWidth - TooltipWidth));
+            double ty = Math.Max(0, Math.Min(pos.Y + TooltipCursorOffset, ActualHeight - TooltipHeight));
             tooltipTransform.X = tx;
             tooltipTransform.Y = ty;
             tooltipBorder.Visibility = Visibility.Visible;
@@ -336,6 +342,54 @@ public sealed partial class TreemapControl : UserControl
         _hoveredIndex = -1;
         tooltipBorder.Visibility = Visibility.Collapsed;
         canvas.Invalidate();
+    }
+
+    /// <summary>
+    /// Keyboard navigation: arrow keys move the selection through rectangles,
+    /// Space/Enter activate the selection, Escape clears it.
+    /// This provides an accessible path for users who cannot use a pointer.
+    /// </summary>
+    private void OnKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (_nodes.Count == 0) return;
+
+        int next = _selectedIndex;
+
+        switch (e.Key)
+        {
+            case Windows.System.VirtualKey.Right:
+            case Windows.System.VirtualKey.Down:
+                next = (_selectedIndex < 0) ? 0 : Math.Min(_selectedIndex + 1, _nodes.Count - 1);
+                break;
+
+            case Windows.System.VirtualKey.Left:
+            case Windows.System.VirtualKey.Up:
+                next = (_selectedIndex < 0) ? 0 : Math.Max(_selectedIndex - 1, 0);
+                break;
+
+            case Windows.System.VirtualKey.Space:
+            case Windows.System.VirtualKey.Enter:
+                if (_selectedIndex >= 0)
+                    SelectedGroupChanged?.Invoke(this, _nodes[_selectedIndex].Group);
+                e.Handled = true;
+                return;
+
+            case Windows.System.VirtualKey.Escape:
+                next = -1;
+                break;
+
+            default:
+                return;
+        }
+
+        if (next != _selectedIndex)
+        {
+            _selectedIndex = next;
+            canvas.Invalidate();
+            SelectedGroupChanged?.Invoke(this, _selectedIndex >= 0 ? _nodes[_selectedIndex].Group : null);
+        }
+
+        e.Handled = true;
     }
 
     // -------------------------------------------------------------------------

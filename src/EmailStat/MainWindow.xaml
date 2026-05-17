@@ -50,7 +50,6 @@
 
             <AppBarButton
                 Command="{x:Bind ViewModel.RefreshCommand}"
-                IsEnabled="{x:Bind not ViewModel.IsLoading, Mode=OneWay}"
                 Label="Refresh"
                 ToolTipService.ToolTip="Re-fetch email data">
                 <AppBarButton.Icon>

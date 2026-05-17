@@ -164,17 +164,19 @@ public sealed partial class MainViewModel : ObservableObject
                 StatusMessage = $"Fetching… {p.Fetched:N0} / {p.Total:N0} messages");
         });
 
+        // Guard against NaN or out-of-range values from the NumberBox.
+        int limit = double.IsNaN(MaxMessages)
+            ? 5_000
+            : Math.Clamp((int)MaxMessages, 100, 100_000);
+
         IReadOnlyList<EmailGroup> groups = await _gmail.FetchGroupsAsync(
-            GroupByDomain, (int)MaxMessages, progress, ct);
+            GroupByDomain, limit, progress, ct);
 
         _dispatcher.TryEnqueue(() =>
         {
-            EmailGroups.Clear();
-            foreach (var g in groups)
-                EmailGroups.Add(g);
-
-            OnPropertyChanged(nameof(ShowEmptyState));
-            OnPropertyChanged(nameof(HasData));
+            // Replace the collection in one assignment so the bound TreemapControl
+            // receives a single Items-changed notification instead of one per group.
+            EmailGroups = new ObservableCollection<EmailGroup>(groups);
 
             long total = groups.Sum(g => g.EmailCount);
             string mode = GroupByDomain ? "domain" : "address";
@@ -184,11 +186,13 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void OnGroupingChanged()
     {
-        if (!_gmail.IsAuthenticated || IsLoading) return;
+        if (!_gmail.IsAuthenticated) return;
 
-        // Fire-and-forget: exceptions are caught inside RefreshAsync.
+        // Cancel any in-progress fetch and restart with the new grouping.
+        // This means toggling while loading is never silently ignored.
         _ = RefreshAsync().ContinueWith(
-            t => StatusMessage = $"Error: {t.Exception!.InnerException?.Message ?? t.Exception.Message}",
+            t => _dispatcher.TryEnqueue(() =>
+                StatusMessage = $"Error: {t.Exception!.InnerException?.Message ?? t.Exception.Message}"),
             System.Threading.CancellationToken.None,
             System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted,
             System.Threading.Tasks.TaskScheduler.Default);
