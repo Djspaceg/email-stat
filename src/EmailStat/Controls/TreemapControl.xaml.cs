@@ -3,6 +3,7 @@ namespace EmailStat.Controls;
 using EmailStat.Helpers;
 using EmailStat.Models;
 using Microsoft.Graphics.Canvas;
+using Microsoft.Graphics.Canvas.Brushes;
 using Microsoft.Graphics.Canvas.Text;
 using Microsoft.Graphics.Canvas.UI;
 using Microsoft.Graphics.Canvas.UI.Xaml;
@@ -10,12 +11,15 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using System.Collections.Specialized;
+using System.Numerics;
 using Windows.Foundation;
 using Windows.UI;
 
 /// <summary>
 /// A WinUI 3 UserControl that renders a WinDirStat-style squarified treemap
 /// using Win2D (hardware-accelerated Direct2D).
+/// Each rectangle is filled with a diagonal cushion gradient that simulates
+/// WinDirStat's 3-D surface shading with a top-left light source.
 /// </summary>
 public sealed partial class TreemapControl : UserControl
 {
@@ -43,6 +47,14 @@ public sealed partial class TreemapControl : UserControl
 
     /// <summary>Raised when the user clicks a rectangle.  Argument is <c>null</c> when clicking empty space.</summary>
     public event EventHandler<EmailGroup?>? SelectedGroupChanged;
+
+    // -------------------------------------------------------------------------
+    // Drawing constants
+    // -------------------------------------------------------------------------
+
+    /// <summary>Pixel offset applied to the shadow pass of each label to create a drop-shadow effect.</summary>
+    private const float ShadowOffsetX = 1f;
+    private const float ShadowOffsetY = 1f;
 
     // -------------------------------------------------------------------------
     // Private state
@@ -155,44 +167,79 @@ public sealed partial class TreemapControl : UserControl
 
         if (w < 1 || h < 1) return;
 
-        bool hovered   = index == _hoveredIndex;
-        bool selected  = index == _selectedIndex;
+        bool hovered  = index == _hoveredIndex;
+        bool selected = index == _selectedIndex;
 
-        // Fill
-        Color fill = (hovered || selected) ? ColorGenerator.GetHighlightColor(index) : node.Color;
-        ds.FillRectangle(x, y, w, h, fill);
+        Color baseColor = (hovered || selected) ? ColorGenerator.GetHighlightColor(index) : node.Color;
 
-        // Border: thicker and white for the selected item
-        float borderW  = selected ? 2.5f : 0.8f;
-        Color borderC  = selected
+        // ── Cushion gradient ──────────────────────────────────────────────────
+        // Simulate WinDirStat's 3-D surface shading: light comes from the
+        // top-left, so the upper-left corner is lighter and the lower-right
+        // corner uses the saturated base color.  A mid-stop at 45% gives a
+        // smooth roll-off that approximates a parabolic cushion surface.
+        Color gradStart = LightenColor(baseColor, selected ? 85 : 60);
+        Color gradMid   = LightenColor(baseColor, selected ? 30 : 15);
+        Color gradEnd   = DarkenColor(baseColor, 18);
+
+        using var fillBrush = new CanvasLinearGradientBrush(
+            ds,
+            [
+                new CanvasGradientStop { Color = gradStart, Position = 0.00f },
+                new CanvasGradientStop { Color = gradMid,   Position = 0.45f },
+                new CanvasGradientStop { Color = gradEnd,   Position = 1.00f },
+            ])
+        {
+            // Diagonal: top-left corner → bottom-right corner
+            StartPoint = new Vector2(x, y),
+            EndPoint   = new Vector2(x + w, y + h),
+        };
+
+        ds.FillRectangle(x, y, w, h, fillBrush);
+
+        // ── Inner bevel highlight on top and left edges ───────────────────────
+        // Gives each rectangle a subtle raised look, matching WinDirStat.
+        if (w >= 4 && h >= 4)
+        {
+            Color bevel = Color.FromArgb(70, 255, 255, 255);
+            ds.DrawLine(x, y, x + w - 1, y, bevel, 1.2f);      // top edge
+            ds.DrawLine(x, y, x, y + h - 1, bevel, 1.2f);      // left edge
+        }
+
+        // ── Border ────────────────────────────────────────────────────────────
+        // White + thicker for the selected rectangle, dark-translucent otherwise.
+        float borderW = selected ? 2.5f : 0.8f;
+        Color borderC = selected
             ? Color.FromArgb(255, 255, 255, 255)
-            : Color.FromArgb(130, 0, 0, 0);
+            : Color.FromArgb(100, 0, 0, 0);
         ds.DrawRectangle(x, y, w, h, borderC, borderW);
 
-        // Label text (only when the rectangle is large enough to be readable)
+        // ── Label text ────────────────────────────────────────────────────────
+        // Only when the rectangle is large enough to be readable.
         if (w >= 28 && h >= 16)
         {
             float fontSize = Math.Clamp(Math.Min(h / 4f, w / 7f), 8f, 13f);
 
             using var fmt = new CanvasTextFormat
             {
-                FontFamily           = "Segoe UI",
-                FontSize             = fontSize,
-                WordWrapping         = CanvasWordWrapping.NoWrap,
-                HorizontalAlignment  = CanvasHorizontalAlignment.Left,
-                VerticalAlignment    = CanvasVerticalAlignment.Top,
+                FontFamily          = "Segoe UI",
+                FontSize            = fontSize,
+                WordWrapping        = CanvasWordWrapping.NoWrap,
+                HorizontalAlignment = CanvasHorizontalAlignment.Left,
+                VerticalAlignment   = CanvasVerticalAlignment.Top,
             };
 
             string name  = node.Label;
             string count = $"{node.Value:N0}";
-            Color  white = Color.FromArgb(255, 255, 255, 255);
-            Color  dim   = Color.FromArgb(190, 255, 255, 255);
+            Color  white  = Color.FromArgb(255, 255, 255, 255);
+            Color  dim    = Color.FromArgb(190, 255, 255, 255);
+            Color  shadow = Color.FromArgb(130, 0, 0, 0);
 
             if (h >= 34)
             {
                 // Two lines: name + count
-                ds.DrawText(TruncateLabel(name, (int)(w / (fontSize * 0.55f))),
-                    x + 4, y + 4, white, fmt);
+                string nameStr = TruncateLabel(name, (int)(w / (fontSize * 0.55f)));
+                ds.DrawText(nameStr, x + 4 + ShadowOffsetX, y + 4 + ShadowOffsetY, shadow, fmt);  // shadow
+                ds.DrawText(nameStr, x + 4, y + 4, white, fmt);                                    // foreground
 
                 using var smallFmt = new CanvasTextFormat
                 {
@@ -202,14 +249,18 @@ public sealed partial class TreemapControl : UserControl
                     HorizontalAlignment = CanvasHorizontalAlignment.Left,
                     VerticalAlignment   = CanvasVerticalAlignment.Top,
                 };
-                ds.DrawText(count, x + 4, y + 5 + fontSize, dim, smallFmt);
+                float countY = y + 5 + fontSize;
+                ds.DrawText(count, x + 4 + ShadowOffsetX, countY + ShadowOffsetY, shadow, smallFmt);  // shadow
+                ds.DrawText(count, x + 4, countY, dim, smallFmt);                                     // foreground
             }
             else
             {
                 // Single line: "name: count"
                 int maxChars = (int)(w / (fontSize * 0.55f));
                 string line  = $"{TruncateLabel(name, Math.Max(4, maxChars - count.Length - 2))}: {count}";
-                ds.DrawText(line, x + 4, y + (h - fontSize) / 2, white, fmt);
+                float lineY  = y + (h - fontSize) / 2;
+                ds.DrawText(line, x + 4 + ShadowOffsetX, lineY + ShadowOffsetY, shadow, fmt);  // shadow
+                ds.DrawText(line, x + 4, lineY, white, fmt);                                    // foreground
             }
         }
     }
@@ -292,4 +343,18 @@ public sealed partial class TreemapControl : UserControl
         if (label.Length <= maxChars) return label;
         return string.Concat(label.AsSpan(0, maxChars - 1), "…");
     }
+
+    /// <summary>Returns <paramref name="c"/> lightened by <paramref name="amount"/> per channel.</summary>
+    private static Color LightenColor(Color c, int amount) =>
+        Color.FromArgb(255,
+            (byte)Math.Min(255, c.R + amount),
+            (byte)Math.Min(255, c.G + amount),
+            (byte)Math.Min(255, c.B + amount));
+
+    /// <summary>Returns <paramref name="c"/> darkened by <paramref name="amount"/> per channel.</summary>
+    private static Color DarkenColor(Color c, int amount) =>
+        Color.FromArgb(255,
+            (byte)Math.Max(0, c.R - amount),
+            (byte)Math.Max(0, c.G - amount),
+            (byte)Math.Max(0, c.B - amount));
 }
