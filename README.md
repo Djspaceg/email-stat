@@ -45,14 +45,23 @@ cd email-stat
 start EmailStat.sln   # opens in Visual Studio
 ```
 
-### 2 – Create Google OAuth credentials
+### 2 – Register the app with Google (one-time, developer-only)
+
+> **End users never do this.**  This step is done once by the developer before shipping the app.
 
 1. Open [Google Cloud Console](https://console.cloud.google.com/).
 2. Create a new project (or select an existing one).
 3. Go to **APIs & Services → Library** and enable the **Gmail API**.
 4. Go to **APIs & Services → Credentials → Create Credentials → OAuth client ID**.
 5. Choose **Desktop application** and give it a name.
-6. Download the credentials JSON file (e.g. `client_secret_…json`).
+6. Copy the **Client ID** and **Client Secret**.
+7. Open `src/EmailStat/Services/GmailService.cs` and replace the two placeholder constants:
+   ```csharp
+   private const string OAuthClientId     = "YOUR_CLIENT_ID.apps.googleusercontent.com";
+   private const string OAuthClientSecret = "YOUR_CLIENT_SECRET";
+   ```
+
+The credentials are baked into the compiled binary.  Users never need to touch Google Cloud Console.
 
 ### 3 – Build and run
 
@@ -64,13 +73,13 @@ dotnet run   --project src/EmailStat/EmailStat.csproj -c Release -r win-x64
 
 Or press **F5** in Visual Studio (select the `x64` or `x86` platform).
 
-### 4 – Connect
+### 4 – Connect (end-user experience)
 
-1. Click **Connect to Gmail**.
-2. In the setup dialog, read the instructions and click **Select credentials file**.
-3. Browse to the JSON file you downloaded in step 2.
-4. A browser window will open; sign in and grant read-only access.
-5. The treemap populates automatically.
+1. Click **Connect to Gmail** — your default browser opens the Google sign-in page.
+2. Sign in with your Google account and grant read-only access to EmailStat.
+3. Return to the app — the treemap populates automatically.
+
+On subsequent launches the cached token is reused; the browser does not open again.
 
 ---
 

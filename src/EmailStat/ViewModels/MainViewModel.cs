@@ -74,14 +74,12 @@ public sealed partial class MainViewModel : ObservableObject
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Opens a file picker for the Google OAuth credentials file, authenticates,
+    /// Authenticates with Google via the embedded OAuth credentials (browser consent screen),
     /// then fetches email groups.
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanConnect))]
-    private async Task ConnectAsync(string? credentialsPath)
+    private async Task ConnectAsync()
     {
-        if (string.IsNullOrEmpty(credentialsPath)) return;
-
         _cts?.Cancel();
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
@@ -89,9 +87,9 @@ public sealed partial class MainViewModel : ObservableObject
         try
         {
             IsLoading = true;
-            StatusMessage = "Authenticating with Google…";
+            StatusMessage = "Opening browser for Google sign-in…";
 
-            await _gmail.AuthenticateAsync(credentialsPath, ct);
+            await _gmail.AuthenticateAsync(ct);
 
             StatusMessage = "Fetching email data…";
             await LoadGroupsAsync(ct);

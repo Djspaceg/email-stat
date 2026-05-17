@@ -17,6 +17,27 @@ using GoogleGmailApi = Google.Apis.Gmail.v1.GmailService;
 /// </summary>
 public sealed partial class GmailService
 {
+    // ── Developer setup ──────────────────────────────────────────────────────
+    // Register this app once in Google Cloud Console:
+    //   1. console.cloud.google.com → New project
+    //   2. APIs & Services → Library → enable "Gmail API"
+    //   3. APIs & Services → Credentials → Create Credentials → OAuth client ID
+    //      Application type: Desktop application
+    //   4. Copy the Client ID and Client Secret into the constants below.
+    //
+    // SECURITY NOTE: For the OAuth "installed app" / "Desktop" flow, Google
+    // explicitly documents that the client_secret is NOT truly secret — it
+    // identifies the application rather than acting as a password.  Any user
+    // can decompile a desktop binary to retrieve it.  However, if you are
+    // publishing this project publicly, do not commit real credentials.
+    // Use environment variables or dotnet user-secrets during development:
+    //   dotnet user-secrets set "OAuth:ClientId"     "..."
+    //   dotnet user-secrets set "OAuth:ClientSecret" "..."
+    // See: https://developers.google.com/identity/protocols/oauth2/native-app
+    // ─────────────────────────────────────────────────────────────────────────
+    private const string OAuthClientId     = "YOUR_CLIENT_ID.apps.googleusercontent.com";
+    private const string OAuthClientSecret = "YOUR_CLIENT_SECRET";
+
     // The only scope we need is read-only access.
     private static readonly string[] Scopes = [GoogleGmailApi.Scope.GmailReadonly];
     private const string AppName = "EmailStat";
@@ -31,19 +52,25 @@ public sealed partial class GmailService
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Runs the OAuth 2.0 "installed app" flow using <paramref name="clientSecretsPath"/>.
+    /// Runs the OAuth 2.0 "installed app" flow using the credentials embedded in
+    /// <see cref="OAuthClientId"/> / <see cref="OAuthClientSecret"/>.
+    /// Opens the system browser for the Google consent screen on first run.
     /// Tokens are cached in <c>%LOCALAPPDATA%\EmailStat\token\</c> for subsequent runs.
     /// </summary>
-    public async Task AuthenticateAsync(string clientSecretsPath, CancellationToken ct = default)
+    public async Task AuthenticateAsync(CancellationToken ct = default)
     {
-        await using var stream = new FileStream(clientSecretsPath, FileMode.Open, FileAccess.Read);
+        var secrets = new ClientSecrets
+        {
+            ClientId     = OAuthClientId,
+            ClientSecret = OAuthClientSecret,
+        };
 
         string tokenFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "EmailStat", "token");
 
         UserCredential credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
-            GoogleClientSecrets.FromStream(stream).Secrets,
+            secrets,
             Scopes,
             user: "user",
             ct,

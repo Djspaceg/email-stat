@@ -45,8 +45,7 @@
 
                 <Button
                     x:Name="connectButton"
-                    Click="ConnectButton_Click"
-                    IsEnabled="{x:Bind not ViewModel.IsLoading, Mode=OneWay}"
+                    Command="{x:Bind ViewModel.ConnectCommand}"
                     Style="{ThemeResource AccentButtonStyle}">
                     <StackPanel Orientation="Horizontal" Spacing="6">
                         <FontIcon FontSize="14" Glyph="&#xE715;" />
@@ -158,7 +157,7 @@
 
                 <Button
                     HorizontalAlignment="Center"
-                    Click="ConnectButton_Click"
+                    Command="{x:Bind ViewModel.ConnectCommand}"
                     Style="{ThemeResource AccentButtonStyle}">
                     <StackPanel Orientation="Horizontal" Spacing="6">
                         <FontIcon FontSize="14" Glyph="&#xE715;" />
