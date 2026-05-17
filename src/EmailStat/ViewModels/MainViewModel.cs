@@ -52,9 +52,15 @@ public sealed partial class MainViewModel : ObservableObject
         set
         {
             if (SetProperty(ref _groupByDomain, value))
+            {
+                OnPropertyChanged(nameof(GroupByLabelText));
                 OnGroupingChanged();
+            }
         }
     }
+
+    /// <summary>Label text shown inside the group-by toggle button.</summary>
+    public string GroupByLabelText => GroupByDomain ? "Domain" : "Exact address";
 
     public bool ShowEmptyState => !IsLoading && EmailGroups.Count == 0;
     public bool HasData       => EmailGroups.Count > 0;

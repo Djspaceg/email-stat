@@ -25,21 +25,30 @@
         </Grid.RowDefinitions>
 
         <!--  ════════════════════════════════
-              Toolbar
+              Toolbar / custom title bar
               ════════════════════════════════ -->
         <Grid
+            x:Name="AppTitleBar"
             Grid.Row="0"
-            Padding="8,4"
             Background="{ThemeResource SystemAccentColorDark2}">
+            <!--
+                Columns 0 and 4 are padding columns dynamically sized in code-behind
+                to match AppWindow.TitleBar.LeftInset / RightInset, ensuring the
+                system caption buttons (minimize / maximize / close) never overlap
+                the toolbar content.
+            -->
             <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="LeftPaddingColumn" Width="0" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition x:Name="RightPaddingColumn" Width="0" />
             </Grid.ColumnDefinitions>
 
             <!--  Left: action buttons  -->
             <StackPanel
-                Grid.Column="0"
+                Grid.Column="1"
+                Margin="8,4"
                 Orientation="Horizontal"
                 Spacing="4">
 
@@ -70,33 +79,32 @@
 
             <!--  Centre: grouping toggle  -->
             <StackPanel
-                Grid.Column="1"
+                Grid.Column="2"
                 HorizontalAlignment="Center"
                 Orientation="Horizontal"
                 Spacing="8"
                 VerticalAlignment="Center">
                 <TextBlock
-                    Foreground="White"
+                    Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
                     Text="Group by:"
                     VerticalAlignment="Center" />
                 <ToggleButton
                     x:Name="groupDomainToggle"
-                    Checked="GroupToggle_Changed"
                     IsChecked="{x:Bind ViewModel.GroupByDomain, Mode=TwoWay}"
-                    ToolTipService.ToolTip="Toggle between domain grouping and exact-address grouping"
-                    Unchecked="GroupToggle_Changed">
-                    <TextBlock x:Name="groupToggleLabel" Text="Domain" />
+                    ToolTipService.ToolTip="Toggle between domain grouping and exact-address grouping">
+                    <TextBlock Text="{x:Bind ViewModel.GroupByLabelText, Mode=OneWay}" />
                 </ToggleButton>
             </StackPanel>
 
             <!--  Right: max-messages input  -->
             <StackPanel
-                Grid.Column="2"
+                Grid.Column="3"
+                Margin="0,4,8,4"
                 Orientation="Horizontal"
                 Spacing="8"
                 VerticalAlignment="Center">
                 <TextBlock
-                    Foreground="White"
+                    Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
                     Text="Max emails:"
                     VerticalAlignment="Center" />
                 <NumberBox
@@ -192,7 +200,7 @@
             Background="{ThemeResource SystemAccentColorDark1}"
             Visibility="{x:Bind ViewModel.HasData, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
             <TextBlock
-                Foreground="White"
+                Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
                 Opacity="0.9"
                 Text="{x:Bind ViewModel.SelectedGroupInfo, Mode=OneWay}"
                 TextTrimming="CharacterEllipsis" />
