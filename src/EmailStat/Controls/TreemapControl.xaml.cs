@@ -72,6 +72,10 @@ public sealed partial class TreemapControl : UserControl
     public TreemapControl()
     {
         InitializeComponent();
+
+        // Redraw when the user switches between light and dark mode so the canvas
+        // background colour stays in sync with the rest of the UI.
+        ActualThemeChanged += (_, _) => canvas.Invalidate();
     }
 
     // -------------------------------------------------------------------------
@@ -147,13 +151,26 @@ public sealed partial class TreemapControl : UserControl
     private void Canvas_Draw(CanvasControl sender, CanvasDrawEventArgs args)
     {
         CanvasDrawingSession ds = args.DrawingSession;
-        ds.Clear(Color.FromArgb(255, 18, 18, 18));
+        ds.Clear(GetCanvasBackground());
 
         for (int i = 0; i < _nodes.Count; i++)
         {
             DrawNode(ds, _nodes[i], i);
         }
     }
+
+    /// <summary>
+    /// Returns the current theme's page-background colour so the Win2D canvas
+    /// background matches the rest of the UI in both light and dark mode.
+    /// These are the exact values of <c>ApplicationPageBackgroundThemeBrush</c>
+    /// in the WinUI 3 default resource dictionary.
+    /// </summary>
+    private Color GetCanvasBackground() => ActualTheme switch
+    {
+        ElementTheme.Light => Color.FromArgb(255, 243, 243, 243), // #F3F3F3 – WinUI 3 Light
+        ElementTheme.Dark  => Color.FromArgb(255, 28, 28, 28),    // #1C1C1C – WinUI 3 Dark
+        _                  => Color.FromArgb(255, 28, 28, 28),    // Default → follow system (assume Dark)
+    };
 
     private void DrawNode(CanvasDrawingSession ds, TreemapNode node, int index)
     {
