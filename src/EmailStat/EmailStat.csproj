@@ -22,7 +22,7 @@
   <ItemGroup>
     <!-- Windows App SDK / WinUI 3 -->
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.240923002" />
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.7705" />
 
     <!-- Win2D for hardware-accelerated 2D rendering (treemap) -->
     <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.3.0" />
