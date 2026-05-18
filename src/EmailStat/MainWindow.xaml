@@ -5,10 +5,6 @@
     xmlns:controls="using:EmailStat.Controls"
     xmlns:converters="using:EmailStat.Converters">
 
-    <Window.Resources>
-        <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
-    </Window.Resources>
-
     <Grid>
         <Grid.RowDefinitions>
             <!--  Toolbar  -->
@@ -40,7 +36,7 @@
             <!--  Actions  -->
             <AppBarButton
                 x:Name="connectButton"
-                Command="{x:Bind ViewModel.ConnectCommand}"
+                Command="{Binding ConnectCommand}"
                 Label="Connect to Gmail"
                 ToolTipService.ToolTip="Authenticate with Google and load your inbox statistics">
                 <AppBarButton.Icon>
@@ -49,7 +45,7 @@
             </AppBarButton>
 
             <AppBarButton
-                Command="{x:Bind ViewModel.RefreshCommand}"
+                Command="{Binding RefreshCommand}"
                 Label="Refresh"
                 ToolTipService.ToolTip="Re-fetch email data">
                 <AppBarButton.Icon>
@@ -58,8 +54,8 @@
             </AppBarButton>
 
             <AppBarButton
-                Command="{x:Bind ViewModel.CancelCommand}"
-                IsEnabled="{x:Bind ViewModel.IsLoading, Mode=OneWay}"
+                Command="{Binding CancelCommand}"
+                IsEnabled="{Binding IsLoading}"
                 Label="Cancel"
                 ToolTipService.ToolTip="Cancel the current operation">
                 <AppBarButton.Icon>
@@ -71,8 +67,8 @@
 
             <!--  Grouping toggle — label reflects the active mode  -->
             <AppBarToggleButton
-                IsChecked="{x:Bind ViewModel.GroupByDomain, Mode=TwoWay}"
-                Label="{x:Bind ViewModel.GroupByLabelText, Mode=OneWay}"
+                IsChecked="{Binding GroupByDomain, Mode=TwoWay}"
+                Label="{Binding GroupByLabelText}"
                 ToolTipService.ToolTip="Toggle between grouping by domain and by exact sender address">
                 <AppBarToggleButton.Icon>
                     <FontIcon Glyph="&#xE8FD;" />
@@ -95,7 +91,7 @@
                         SmallChange="500"
                         SpinButtonPlacementMode="Compact"
                         ToolTipService.ToolTip="Maximum number of messages to inspect"
-                        Value="{x:Bind ViewModel.MaxMessages, Mode=TwoWay}" />
+                        Value="{Binding MaxMessages, Mode=TwoWay}" />
                 </StackPanel>
             </CommandBar.Content>
         </CommandBar>
@@ -106,7 +102,7 @@
         <ProgressBar
             Grid.Row="1"
             IsIndeterminate="True"
-            Visibility="{x:Bind ViewModel.IsLoading, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}" />
+            Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibilityConverter}}" />
 
         <!--  ════════════════════════════════
               Main content area
@@ -116,16 +112,16 @@
             <!--  Treemap (shown when data is available and not loading)  -->
             <controls:TreemapControl
                 x:Name="treemapControl"
-                Items="{x:Bind ViewModel.EmailGroups, Mode=OneWay}"
+                Items="{Binding EmailGroups}"
                 SelectedGroupChanged="Treemap_SelectedGroupChanged"
-                Visibility="{x:Bind ViewModel.HasData, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}" />
+                Visibility="{Binding HasData, Converter={StaticResource BoolToVisibilityConverter}}" />
 
             <!--  Empty / welcome state  -->
             <StackPanel
                 HorizontalAlignment="Center"
                 VerticalAlignment="Center"
                 Spacing="16"
-                Visibility="{x:Bind ViewModel.ShowEmptyState, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
+                Visibility="{Binding ShowEmptyState, Converter={StaticResource BoolToVisibilityConverter}}">
 
                 <FontIcon
                     HorizontalAlignment="Center"
@@ -146,7 +142,7 @@
 
                 <Button
                     HorizontalAlignment="Center"
-                    Command="{x:Bind ViewModel.ConnectCommand}"
+                    Command="{Binding ConnectCommand}"
                     Style="{ThemeResource AccentButtonStyle}">
                     <StackPanel Orientation="Horizontal" Spacing="6">
                         <FontIcon FontSize="14" Glyph="&#xE715;" />
@@ -160,7 +156,7 @@
                 HorizontalAlignment="Center"
                 VerticalAlignment="Center"
                 Spacing="12"
-                Visibility="{x:Bind ViewModel.IsLoading, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
+                Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibilityConverter}}">
                 <ProgressRing
                     Width="56"
                     Height="56"
@@ -168,7 +164,7 @@
                 <TextBlock
                     HorizontalAlignment="Center"
                     Opacity="0.7"
-                    Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}" />
+                    Text="{Binding StatusMessage}" />
             </StackPanel>
         </Grid>
 
@@ -186,10 +182,10 @@
             Background="{ThemeResource SystemControlBackgroundChromeMediumBrush}"
             BorderBrush="{ThemeResource SystemControlForegroundBaseLowBrush}"
             BorderThickness="0,1,0,0"
-            Visibility="{x:Bind ViewModel.HasData, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
+            Visibility="{Binding HasData, Converter={StaticResource BoolToVisibilityConverter}}">
             <TextBlock
                 Style="{ThemeResource BodyTextBlockStyle}"
-                Text="{x:Bind ViewModel.SelectedGroupInfo, Mode=OneWay}"
+                Text="{Binding SelectedGroupInfo}"
                 TextTrimming="CharacterEllipsis" />
         </Border>
 
@@ -198,15 +194,24 @@
               ════════════════════════════════ -->
         <Border
             Grid.Row="4"
-            Padding="12,3"
             Background="{ThemeResource SystemControlBackgroundChromeMediumBrush}"
             BorderBrush="{ThemeResource SystemControlForegroundBaseLowBrush}"
             BorderThickness="0,1,0,0">
-            <TextBlock
-                Opacity="0.75"
-                Style="{ThemeResource CaptionTextBlockStyle}"
-                Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
-                TextTrimming="CharacterEllipsis" />
+            <Button
+                x:Name="statusBarButton"
+                HorizontalAlignment="Stretch"
+                HorizontalContentAlignment="Left"
+                Padding="12,3"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="StatusBar_Click"
+                ToolTipService.ToolTip="Click to copy to clipboard">
+                <TextBlock
+                    Opacity="0.75"
+                    Style="{ThemeResource CaptionTextBlockStyle}"
+                    Text="{Binding StatusMessage}"
+                    TextTrimming="CharacterEllipsis" />
+            </Button>
         </Border>
     </Grid>
 </Window>

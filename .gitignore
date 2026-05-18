@@ -55,3 +55,7 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# Google OAuth client secret - never commit this
+client_secret.json
+/.vs

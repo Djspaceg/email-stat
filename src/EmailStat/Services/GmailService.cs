@@ -23,20 +23,16 @@ public sealed partial class GmailService
     //   2. APIs & Services → Library → enable "Gmail API"
     //   3. APIs & Services → Credentials → Create Credentials → OAuth client ID
     //      Application type: Desktop application
-    //   4. Copy the Client ID and Client Secret into the constants below.
-    //
-    // SECURITY NOTE: For the OAuth "installed app" / "Desktop" flow, Google
-    // explicitly documents that the client_secret is NOT truly secret — it
-    // identifies the application rather than acting as a password.  Any user
-    // can decompile a desktop binary to retrieve it.  However, if you are
-    // publishing this project publicly, do not commit real credentials.
-    // Use environment variables or dotnet user-secrets during development:
-    //   dotnet user-secrets set "OAuth:ClientId"     "..."
-    //   dotnet user-secrets set "OAuth:ClientSecret" "..."
-    // See: https://developers.google.com/identity/protocols/oauth2/native-app
+    //   4. Download the JSON file and save it as:
+    //        src\EmailStat\client_secret.json
+    //      This file is listed in .gitignore and must NOT be committed to source control.
     // ─────────────────────────────────────────────────────────────────────────
-    private const string OAuthClientId     = "YOUR_CLIENT_ID.apps.googleusercontent.com";
-    private const string OAuthClientSecret = "YOUR_CLIENT_SECRET";
+
+    // Path to the OAuth client secret file downloaded from Google Cloud Console.
+    // Resolved relative to the app's base directory so it works both from the
+    // IDE (project output) and when the binary is run directly.
+    private static readonly string ClientSecretPath = Path.Combine(
+        AppContext.BaseDirectory, "client_secret.json");
 
     // The only scope we need is read-only access.
     private static readonly string[] Scopes = [GoogleGmailApi.Scope.GmailReadonly];
@@ -52,39 +48,36 @@ public sealed partial class GmailService
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Runs the OAuth 2.0 "installed app" flow using the credentials embedded in
-    /// <see cref="OAuthClientId"/> / <see cref="OAuthClientSecret"/>.
+    /// Runs the OAuth 2.0 "installed app" flow using <c>client_secret.json</c>.
     /// Opens the system browser for the Google consent screen on first run.
     /// Tokens are cached in <c>%LOCALAPPDATA%\EmailStat\token\</c> for subsequent runs.
     /// </summary>
-    /// <exception cref="InvalidOperationException">
-    /// Thrown when the OAuth credentials are still set to the placeholder values.
-    /// Fill in <see cref="OAuthClientId"/> and <see cref="OAuthClientSecret"/> before building.
+    /// <exception cref="FileNotFoundException">
+    /// Thrown when <c>client_secret.json</c> is not found next to the executable.
+    /// Download it from Google Cloud Console and place it in the project directory
+    /// with its Build Action set to "Content" and "Copy to Output Directory" enabled.
     /// </exception>
     public async Task AuthenticateAsync(CancellationToken ct = default)
     {
-        if (OAuthClientId == "YOUR_CLIENT_ID.apps.googleusercontent.com" ||
-            OAuthClientSecret == "YOUR_CLIENT_SECRET")
+        if (!File.Exists(ClientSecretPath))
         {
-            throw new InvalidOperationException(
-                "OAuth credentials are not configured. " +
-                "Register this app in Google Cloud Console, then fill in " +
-                "OAuthClientId and OAuthClientSecret in GmailService.cs. " +
-                "See the README for step-by-step setup instructions.");
+            throw new FileNotFoundException(
+                "client_secret.json not found. Download it from Google Cloud Console " +
+                "(APIs & Services → Credentials → your OAuth 2.0 Client ID → Download JSON) " +
+                $"and place it at: {ClientSecretPath}",
+                ClientSecretPath);
         }
 
-        var secrets = new ClientSecrets
-        {
-            ClientId     = OAuthClientId,
-            ClientSecret = OAuthClientSecret,
-        };
+        GoogleClientSecrets googleSecrets;
+        await using (var stream = File.OpenRead(ClientSecretPath))
+            googleSecrets = await GoogleClientSecrets.FromStreamAsync(stream, ct);
 
         string tokenFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "EmailStat", "token");
 
         UserCredential credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
-            secrets,
+            googleSecrets.Secrets,
             Scopes,
             user: "user",
             ct,
@@ -132,34 +125,47 @@ public sealed partial class GmailService
             var listReq = _svc!.Users.Messages.List("me");
             listReq.PageToken = pageToken;
             listReq.MaxResults = Math.Min(500, maxMessages - fetched);
-            listReq.LabelIds = ["INBOX"];
+            listReq.LabelIds = new Google.Apis.Util.Repeatable<string>(new[] { "INBOX" });
             listReq.Fields = "nextPageToken,messages(id)";
 
             ListMessagesResponse listResp = await listReq.ExecuteAsync(ct);
             if (listResp.Messages is null) break;
 
-            // ---- Batch-fetch From headers in chunks of 100 ----
-            var ids = listResp.Messages.Select(m => m.Id).ToList();
-            for (int offset = 0; offset < ids.Count; offset += 100)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                var chunk = ids.Skip(offset).Take(100).ToList();
-                var tasks = chunk.Select(id => GetFromHeaderAsync(id, ct));
-                string?[] headers = await Task.WhenAll(tasks);
-
-                foreach (string? h in headers)
-                {
-                    if (!string.IsNullOrWhiteSpace(h))
+            // ---- Batch-fetch From headers in chunks of 100, throttled ----
+                    var ids = listResp.Messages.Select(m => m.Id).ToList();
+                    for (int offset = 0; offset < ids.Count; offset += 100)
                     {
-                        string addr = ExtractAddress(h);
-                        fromCounts.AddOrUpdate(addr, 1, (_, v) => v + 1);
-                    }
-                }
+                        ct.ThrowIfCancellationRequested();
 
-                fetched += chunk.Count;
-                progress?.Report((fetched, maxMessages));
-            }
+                        var chunk = ids.Skip(offset).Take(100).ToList();
+
+                        // Throttle to avoid hitting Gmail's QPM limit.
+                        // Process in small parallel groups with a delay between each group.
+                        const int concurrency = 5;
+                        for (int i = 0; i < chunk.Count; i += concurrency)
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            var group = chunk.Skip(i).Take(concurrency).ToList();
+                            var tasks = group.Select(id => GetFromHeaderAsync(id, ct));
+                            string?[] headers = await Task.WhenAll(tasks);
+
+                            foreach (string? h in headers)
+                            {
+                                if (!string.IsNullOrWhiteSpace(h))
+                                {
+                                    string addr = ExtractAddress(h);
+                                    fromCounts.AddOrUpdate(addr, 1, (_, v) => v + 1);
+                                }
+                            }
+
+                            fetched += group.Count;
+                            progress?.Report((fetched, maxMessages));
+
+                            // Brief pause between groups to stay well under the QPM ceiling.
+                            if (i + concurrency < chunk.Count)
+                                await Task.Delay(200, ct);
+                        }
+                    }
 
             pageToken = listResp.NextPageToken;
         }
@@ -174,30 +180,39 @@ public sealed partial class GmailService
 
     private async Task<string?> GetFromHeaderAsync(string messageId, CancellationToken ct)
     {
-        try
+        int delayMs = 500;
+        for (int attempt = 0; attempt < 5; attempt++)
         {
-            var req = _svc!.Users.Messages.Get("me", messageId);
-            req.Format = UsersResource.MessagesResource.GetRequest.FormatEnum.Metadata;
-            req.MetadataHeaders = ["From"];
-            req.Fields = "payload/headers";
+            try
+            {
+                var req = _svc!.Users.Messages.Get("me", messageId);
+                req.Format = UsersResource.MessagesResource.GetRequest.FormatEnum.Metadata;
+                req.MetadataHeaders = new Google.Apis.Util.Repeatable<string>(new[] { "From" });
+                req.Fields = "payload/headers";
 
-            Message msg = await req.ExecuteAsync(ct);
-            return msg.Payload?.Headers?
-                .FirstOrDefault(h => string.Equals(h.Name, "From", StringComparison.OrdinalIgnoreCase))
-                ?.Value;
+                Message msg = await req.ExecuteAsync(ct);
+                return msg.Payload?.Headers?
+                    .FirstOrDefault(h => string.Equals(h.Name, "From", StringComparison.OrdinalIgnoreCase))
+                    ?.Value;
+            }
+            catch (Google.GoogleApiException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.TooManyRequests
+                                                    || (int)ex.HttpStatusCode == 429
+                                                    || ex.Error?.Code == 403)
+            {
+                if (attempt == 4) return null;
+                await Task.Delay(delayMs, ct);
+                delayMs *= 2; // exponential backoff
+            }
+            catch (Google.GoogleApiException)
+            {
+                return null;
+            }
+            catch (System.Net.Http.HttpRequestException)
+            {
+                return null;
+            }
         }
-        catch (Google.GoogleApiException)
-        {
-            // Skip individual messages that are inaccessible or return API errors
-            // (e.g. 403 Forbidden on specific messages, 404 Not Found).
-            return null;
-        }
-        catch (System.Net.Http.HttpRequestException)
-        {
-            // Transient network error for a single message — skip and continue.
-            return null;
-        }
-        // All other exceptions (e.g. OperationCanceledException) propagate to the caller.
+        return null;
     }
 
     private static IReadOnlyList<EmailGroup> BuildAddressGroups(
