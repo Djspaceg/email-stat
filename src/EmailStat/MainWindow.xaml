@@ -1,0 +1,217 @@
+<Window
+    x:Class="EmailStat.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:EmailStat.Controls"
+    xmlns:converters="using:EmailStat.Converters">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <!--  Toolbar  -->
+            <RowDefinition Height="Auto" />
+            <!--  Progress bar (hidden when idle)  -->
+            <RowDefinition Height="Auto" />
+            <!--  Main content  -->
+            <RowDefinition Height="*" />
+            <!--  Detail bar  -->
+            <RowDefinition Height="Auto" />
+            <!--  Status bar  -->
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!--  ════════════════════════════════
+              Toolbar
+              ════════════════════════════════ -->
+        <!--
+            CommandBar gives us WinUI-standard button chrome (hover, press, disabled,
+            checked states) and themed text/icon colours for free — no manual
+            Foreground or Background overrides required.
+        -->
+        <CommandBar
+            Grid.Row="0"
+            DefaultLabelPosition="Right"
+            IsDynamicOverflowEnabled="False"
+            OverflowButtonVisibility="Collapsed">
+
+            <!--  Actions  -->
+            <AppBarButton
+                x:Name="connectButton"
+                Command="{Binding ConnectCommand}"
+                Label="Connect to Gmail"
+                ToolTipService.ToolTip="Authenticate with Google and load your inbox statistics">
+                <AppBarButton.Icon>
+                    <FontIcon Glyph="&#xE715;" />
+                </AppBarButton.Icon>
+            </AppBarButton>
+
+            <AppBarButton
+                Command="{Binding RefreshCommand}"
+                Label="Refresh"
+                ToolTipService.ToolTip="Re-fetch email data">
+                <AppBarButton.Icon>
+                    <FontIcon Glyph="&#xE72C;" />
+                </AppBarButton.Icon>
+            </AppBarButton>
+
+            <AppBarButton
+                Command="{Binding CancelCommand}"
+                IsEnabled="{Binding IsLoading}"
+                Label="Cancel"
+                ToolTipService.ToolTip="Cancel the current operation">
+                <AppBarButton.Icon>
+                    <FontIcon Glyph="&#xE711;" />
+                </AppBarButton.Icon>
+            </AppBarButton>
+
+            <AppBarSeparator />
+
+            <!--  Grouping toggle — label reflects the active mode  -->
+            <AppBarToggleButton
+                IsChecked="{Binding GroupByDomain, Mode=TwoWay}"
+                Label="{Binding GroupByLabelText}"
+                ToolTipService.ToolTip="Toggle between grouping by domain and by exact sender address">
+                <AppBarToggleButton.Icon>
+                    <FontIcon Glyph="&#xE8FD;" />
+                </AppBarToggleButton.Icon>
+            </AppBarToggleButton>
+
+            <!--  Max-emails setting (left / content area)  -->
+            <CommandBar.Content>
+                <StackPanel
+                    Margin="12,0"
+                    Orientation="Horizontal"
+                    Spacing="8"
+                    VerticalAlignment="Center">
+                    <TextBlock Text="Max emails:" VerticalAlignment="Center" />
+                    <NumberBox
+                        x:Name="maxMessagesBox"
+                        Width="110"
+                        Maximum="100000"
+                        Minimum="100"
+                        SmallChange="500"
+                        SpinButtonPlacementMode="Compact"
+                        ToolTipService.ToolTip="Maximum number of messages to inspect"
+                        Value="{Binding MaxMessages, Mode=TwoWay}" />
+                </StackPanel>
+            </CommandBar.Content>
+        </CommandBar>
+
+        <!--  ════════════════════════════════
+              Progress indicator
+              ════════════════════════════════ -->
+        <ProgressBar
+            Grid.Row="1"
+            IsIndeterminate="True"
+            Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibilityConverter}}" />
+
+        <!--  ════════════════════════════════
+              Main content area
+              ════════════════════════════════ -->
+        <Grid Grid.Row="2">
+
+            <!--  Treemap (shown when data is available and not loading)  -->
+            <controls:TreemapControl
+                x:Name="treemapControl"
+                Items="{Binding EmailGroups}"
+                SelectedGroupChanged="Treemap_SelectedGroupChanged"
+                Visibility="{Binding HasData, Converter={StaticResource BoolToVisibilityConverter}}" />
+
+            <!--  Empty / welcome state  -->
+            <StackPanel
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Spacing="16"
+                Visibility="{Binding ShowEmptyState, Converter={StaticResource BoolToVisibilityConverter}}">
+
+                <FontIcon
+                    HorizontalAlignment="Center"
+                    FontSize="72"
+                    Glyph="&#xE715;"
+                    Opacity="0.4" />
+
+                <TextBlock
+                    HorizontalAlignment="Center"
+                    Opacity="0.7"
+                    Style="{ThemeResource SubtitleTextBlockStyle}"
+                    Text="Visualise your Gmail inbox" />
+
+                <TextBlock
+                    HorizontalAlignment="Center"
+                    Opacity="0.5"
+                    Text="Connect to Gmail and the treemap will show you&#x0a;which senders or domains are filling your inbox." />
+
+                <Button
+                    HorizontalAlignment="Center"
+                    Command="{Binding ConnectCommand}"
+                    Style="{ThemeResource AccentButtonStyle}">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <FontIcon FontSize="14" Glyph="&#xE715;" />
+                        <TextBlock Text="Connect to Gmail" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+
+            <!--  Loading overlay (spinner centred over the treemap)  -->
+            <StackPanel
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Spacing="12"
+                Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibilityConverter}}">
+                <ProgressRing
+                    Width="56"
+                    Height="56"
+                    IsActive="True" />
+                <TextBlock
+                    HorizontalAlignment="Center"
+                    Opacity="0.7"
+                    Text="{Binding StatusMessage}" />
+            </StackPanel>
+        </Grid>
+
+        <!--  ════════════════════════════════
+              Selected-group detail bar
+              ════════════════════════════════ -->
+        <!--
+            Uses the same neutral chrome background as the status bar so no manual
+            Foreground override is needed — BodyTextBlockStyle picks up the correct
+            foreground for the current theme automatically.
+        -->
+        <Border
+            Grid.Row="3"
+            Padding="12,4"
+            Background="{ThemeResource SystemControlBackgroundChromeMediumBrush}"
+            BorderBrush="{ThemeResource SystemControlForegroundBaseLowBrush}"
+            BorderThickness="0,1,0,0"
+            Visibility="{Binding HasData, Converter={StaticResource BoolToVisibilityConverter}}">
+            <TextBlock
+                Style="{ThemeResource BodyTextBlockStyle}"
+                Text="{Binding SelectedGroupInfo}"
+                TextTrimming="CharacterEllipsis" />
+        </Border>
+
+        <!--  ════════════════════════════════
+              Status bar
+              ════════════════════════════════ -->
+        <Border
+            Grid.Row="4"
+            Background="{ThemeResource SystemControlBackgroundChromeMediumBrush}"
+            BorderBrush="{ThemeResource SystemControlForegroundBaseLowBrush}"
+            BorderThickness="0,1,0,0">
+            <Button
+                x:Name="statusBarButton"
+                HorizontalAlignment="Stretch"
+                HorizontalContentAlignment="Left"
+                Padding="12,3"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="StatusBar_Click"
+                ToolTipService.ToolTip="Click to copy to clipboard">
+                <TextBlock
+                    Opacity="0.75"
+                    Style="{ThemeResource CaptionTextBlockStyle}"
+                    Text="{Binding StatusMessage}"
+                    TextTrimming="CharacterEllipsis" />
+            </Button>
+        </Border>
+    </Grid>
+</Window>
