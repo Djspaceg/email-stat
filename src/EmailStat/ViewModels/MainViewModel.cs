@@ -35,6 +35,14 @@ public sealed partial class MainViewModel : ObservableObject
     [NotifyCanExecuteChangedFor(nameof(RefreshCommand))]
     private bool _isLoading;
 
+    /// <summary>Current value for the determinate progress bar (0 when idle).</summary>
+    [ObservableProperty]
+    private double _fetchProgress;
+
+    /// <summary>Maximum value for the progress bar — set when a fetch begins.</summary>
+    [ObservableProperty]
+    private double _fetchProgressMax = 1;
+
     [ObservableProperty]
     private EmailGroup? _selectedGroup;
 
@@ -44,7 +52,7 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private double _maxMessages = 5_000;
 
-    // Backing field for GroupByDomain: changing it re-fetches automatically.
+    // Backing field for GroupByDomain: toggling re-groups from cache — no network call.
     private bool _groupByDomain = true;
     public bool GroupByDomain
     {
@@ -54,13 +62,16 @@ public sealed partial class MainViewModel : ObservableObject
             if (SetProperty(ref _groupByDomain, value))
             {
                 OnPropertyChanged(nameof(GroupByLabelText));
-                OnGroupingChanged();
+                RegroupFromCache();
             }
         }
     }
 
     /// <summary>Label text shown inside the group-by toggle button.</summary>
     public string GroupByLabelText => GroupByDomain ? "Domain" : "Exact address";
+
+    /// <summary>Label for the connect/fetch button depending on auth state.</summary>
+    public string ConnectButtonLabel => _gmail.HasStoredToken ? "Fetch emails" : "Connect to Gmail";
 
     public bool ShowEmptyState => !IsLoading && EmailGroups.Count == 0;
     public bool HasData       => EmailGroups.Count > 0;
@@ -96,8 +107,9 @@ public sealed partial class MainViewModel : ObservableObject
             StatusMessage = "Opening browser for Google sign-in…";
 
             await _gmail.AuthenticateAsync(ct);
+            OnPropertyChanged(nameof(ConnectButtonLabel)); // may change to "Fetch emails"
 
-            StatusMessage = "Fetching email data…";
+            StatusMessage = "Checking local cache…";
             await LoadGroupsAsync(ct);
         }
         catch (OperationCanceledException)
@@ -129,7 +141,7 @@ public sealed partial class MainViewModel : ObservableObject
         try
         {
             IsLoading = true;
-            StatusMessage = "Refreshing…";
+            StatusMessage = "Checking local cache…";
             await LoadGroupsAsync(ct);
         }
         catch (OperationCanceledException)
@@ -158,25 +170,42 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task LoadGroupsAsync(CancellationToken ct)
     {
-        var progress = new Progress<(int Fetched, int Total)>(p =>
-        {
-            _dispatcher.TryEnqueue(() =>
-                StatusMessage = $"Fetching… {p.Fetched:N0} / {p.Total:N0} messages");
-        });
-
         // Guard against NaN or out-of-range values from the NumberBox.
         int limit = double.IsNaN(MaxMessages)
             ? 5_000
             : Math.Clamp((int)MaxMessages, 100, 100_000);
+
+        _dispatcher.TryEnqueue(() =>
+        {
+            FetchProgress    = 0;
+            FetchProgressMax = limit;
+        });
+
+        var progress = new Progress<(int Fetched, int Total)>(p =>
+        {
+            _dispatcher.TryEnqueue(() =>
+            {
+                if (p.Total > 0)
+                {
+                    FetchProgressMax = p.Total;
+                    FetchProgress    = p.Fetched;
+                    StatusMessage    = $"Fetching… {p.Fetched:N0} / {p.Total:N0} messages";
+                }
+                else
+                {
+                    // Incremental sync — indeterminate-style: just show a message.
+                    StatusMessage = "Syncing new messages…";
+                }
+            });
+        });
 
         IReadOnlyList<EmailGroup> groups = await _gmail.FetchGroupsAsync(
             GroupByDomain, limit, progress, ct);
 
         _dispatcher.TryEnqueue(() =>
         {
-            // Replace the collection in one assignment so the bound TreemapControl
-            // receives a single Items-changed notification instead of one per group.
-            EmailGroups = new ObservableCollection<EmailGroup>(groups);
+            EmailGroups      = new ObservableCollection<EmailGroup>(groups);
+            FetchProgress    = FetchProgressMax; // fill bar on completion
 
             long total = groups.Sum(g => g.EmailCount);
             string mode = GroupByDomain ? "domain" : "address";
@@ -184,18 +213,20 @@ public sealed partial class MainViewModel : ObservableObject
         });
     }
 
-    private void OnGroupingChanged()
+    /// <summary>
+    /// Re-groups the already-cached data without any network call.
+    /// Called when the user toggles the group-by mode.
+    /// </summary>
+    private void RegroupFromCache()
     {
-        if (!_gmail.IsAuthenticated) return;
+        var reGrouped = _gmail.RegroupCache(GroupByDomain);
+        if (reGrouped is null) return;
 
-        // Cancel any in-progress fetch and restart with the new grouping.
-        // This means toggling while loading is never silently ignored.
-        _ = RefreshAsync().ContinueWith(
-            t => _dispatcher.TryEnqueue(() =>
-                StatusMessage = $"Error: {t.Exception!.InnerException?.Message ?? t.Exception.Message}"),
-            System.Threading.CancellationToken.None,
-            System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted,
-            System.Threading.Tasks.TaskScheduler.Default);
+        EmailGroups = new ObservableCollection<EmailGroup>(reGrouped);
+
+        long total = reGrouped.Sum(g => g.EmailCount);
+        string mode = GroupByDomain ? "domain" : "address";
+        StatusMessage = $"{reGrouped.Count:N0} {mode}(s) · {total:N0} emails analysed";
     }
 
     partial void OnSelectedGroupChanged(EmailGroup? value)
