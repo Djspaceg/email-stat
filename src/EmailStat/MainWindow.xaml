@@ -37,8 +37,8 @@
             <AppBarButton
                 x:Name="connectButton"
                 Command="{Binding ConnectCommand}"
-                Label="Connect to Gmail"
-                ToolTipService.ToolTip="Authenticate with Google and load your inbox statistics">
+                Label="{Binding ConnectButtonLabel}"
+                ToolTipService.ToolTip="Authenticate with Google and load your inbox emails">
                 <AppBarButton.Icon>
                     <FontIcon Glyph="&#xE715;" />
                 </AppBarButton.Icon>
@@ -101,7 +101,8 @@
               ════════════════════════════════ -->
         <ProgressBar
             Grid.Row="1"
-            IsIndeterminate="True"
+            Maximum="{Binding FetchProgressMax}"
+            Value="{Binding FetchProgress}"
             Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibilityConverter}}" />
 
         <!--  ════════════════════════════════
@@ -146,7 +147,7 @@
                     Style="{ThemeResource AccentButtonStyle}">
                     <StackPanel Orientation="Horizontal" Spacing="6">
                         <FontIcon FontSize="14" Glyph="&#xE715;" />
-                        <TextBlock Text="Connect to Gmail" />
+                        <TextBlock Text="{Binding ConnectButtonLabel}" />
                     </StackPanel>
                 </Button>
             </StackPanel>

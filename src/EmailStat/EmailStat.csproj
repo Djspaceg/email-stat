@@ -33,6 +33,9 @@
 
     <!-- Gmail API -->
     <PackageReference Include="Google.Apis.Gmail.v1" Version="1.68.0.3427" />
+
+    <!-- DPAPI-based local cache encryption -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>

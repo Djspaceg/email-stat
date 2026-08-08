@@ -13,60 +13,51 @@ using System.Text.RegularExpressions;
 using GoogleGmailApi = Google.Apis.Gmail.v1.GmailService;
 
 /// <summary>
-/// Wraps the Gmail REST API.  Handles OAuth 2.0 and email-group aggregation.
+/// Wraps the Gmail REST API.  Handles OAuth 2.0, email-group aggregation,
+/// and DPAPI-encrypted local caching with incremental history sync.
 /// </summary>
 public sealed partial class GmailService
 {
-    // ── Developer setup ──────────────────────────────────────────────────────
-    // Register this app once in Google Cloud Console:
-    //   1. console.cloud.google.com → New project
-    //   2. APIs & Services → Library → enable "Gmail API"
-    //   3. APIs & Services → Credentials → Create Credentials → OAuth client ID
-    //      Application type: Desktop application
-    //   4. Download the JSON file and save it as:
-    //        src\EmailStat\client_secret.json
-    //      This file is listed in .gitignore and must NOT be committed to source control.
-    // ─────────────────────────────────────────────────────────────────────────
-
     // Path to the OAuth client secret file downloaded from Google Cloud Console.
-    // Resolved relative to the app's base directory so it works both from the
-    // IDE (project output) and when the binary is run directly.
     private static readonly string ClientSecretPath = Path.Combine(
         AppContext.BaseDirectory, "client_secret.json");
 
-    // The only scope we need is read-only access.
     private static readonly string[] Scopes = [GoogleGmailApi.Scope.GmailReadonly];
     private const string AppName = "EmailStat";
 
     private GoogleGmailApi? _svc;
+    private readonly MessageCacheService _cache = new();
 
     /// <summary>True once the user has successfully authenticated.</summary>
     public bool IsAuthenticated => _svc is not null;
+
+    /// <summary>
+    /// True when a cached OAuth token exists on disk, meaning the user has previously
+    /// authenticated and the browser consent screen will be skipped on next connect.
+    /// </summary>
+    public bool HasStoredToken
+    {
+        get
+        {
+            string tokenFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "EmailStat", "token");
+            // The Google SDK stores token files named after the user key ("user").
+            return Directory.Exists(tokenFolder) &&
+                   Directory.EnumerateFiles(tokenFolder).Any();
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Authentication
     // -------------------------------------------------------------------------
 
-    /// <summary>
-    /// Runs the OAuth 2.0 "installed app" flow using <c>client_secret.json</c>.
-    /// Opens the system browser for the Google consent screen on first run.
-    /// Tokens are cached in <c>%LOCALAPPDATA%\EmailStat\token\</c> for subsequent runs.
-    /// </summary>
-    /// <exception cref="FileNotFoundException">
-    /// Thrown when <c>client_secret.json</c> is not found next to the executable.
-    /// Download it from Google Cloud Console and place it in the project directory
-    /// with its Build Action set to "Content" and "Copy to Output Directory" enabled.
-    /// </exception>
     public async Task AuthenticateAsync(CancellationToken ct = default)
     {
         if (!File.Exists(ClientSecretPath))
-        {
             throw new FileNotFoundException(
                 "client_secret.json not found. Download it from Google Cloud Console " +
-                "(APIs & Services → Credentials → your OAuth 2.0 Client ID → Download JSON) " +
-                $"and place it at: {ClientSecretPath}",
-                ClientSecretPath);
-        }
+                $"and place it at: {ClientSecretPath}", ClientSecretPath);
 
         GoogleClientSecrets googleSecrets;
         await using (var stream = File.OpenRead(ClientSecretPath))
@@ -77,10 +68,7 @@ public sealed partial class GmailService
             "EmailStat", "token");
 
         UserCredential credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
-            googleSecrets.Secrets,
-            Scopes,
-            user: "user",
-            ct,
+            googleSecrets.Secrets, Scopes, "user", ct,
             new FileDataStore(tokenFolder, fullPath: true));
 
         _svc = new GoogleGmailApi(new BaseClientService.Initializer
@@ -91,20 +79,16 @@ public sealed partial class GmailService
     }
 
     // -------------------------------------------------------------------------
-    // Data fetching
+    // Data fetching — cache-aware
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Fetches up to <paramref name="maxMessages"/> messages from the user's <b>Inbox</b>,
-    /// extracts the From header, and returns groups sorted by email count descending.
-    /// Only messages with the INBOX label are counted; sent, archived, and spam messages
-    /// are excluded so the treemap reflects actual inbox composition.
+    /// Returns grouped email counts.  On the first call a full fetch is performed
+    /// and results are encrypted and saved locally.  On subsequent calls only the
+    /// messages added or removed since the last sync are fetched from Gmail.
+    /// If <paramref name="maxMessages"/> exceeds the number of currently cached
+    /// messages, a top-up fetch is performed before applying the history diff.
     /// </summary>
-    /// <param name="groupByDomain">
-    ///   When <c>true</c> groups by sender domain; when <c>false</c> groups by exact address.
-    /// </param>
-    /// <param name="maxMessages">Maximum number of messages to inspect (default 5 000).</param>
-    /// <param name="progress">Optional progress callback: (fetched, total).</param>
     public async Task<IReadOnlyList<EmailGroup>> FetchGroupsAsync(
         bool groupByDomain,
         int maxMessages = 5_000,
@@ -113,7 +97,56 @@ public sealed partial class GmailService
     {
         EnsureAuthenticated();
 
-        var fromCounts = new ConcurrentDictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        bool cacheLoaded = _cache.TryLoad();
+
+        if (cacheLoaded && _cache.LastHistoryId.HasValue)
+        {
+            // If the user wants more messages than we have cached, fetch the gap first.
+            if (_cache.Messages.Count < maxMessages)
+                await TopUpFetchAsync(maxMessages, progress, ct);
+            else
+                progress?.Report((0, 0)); // signal start for incremental sync
+
+            await ApplyHistoryDiffAsync(_cache.LastHistoryId.Value, progress, ct);
+        }
+        else
+        {
+            await FullFetchAsync(maxMessages, progress, ct);
+        }
+
+        return groupByDomain
+            ? BuildDomainGroups(_cache.Messages)
+            : BuildAddressGroups(_cache.Messages);
+    }
+
+    /// <summary>Clears the local encrypted cache, forcing a full re-fetch next time.</summary>
+    public void ClearCache() => _cache.Clear();
+
+    /// <summary>
+    /// Re-groups the already-cached messages without any network calls.
+    /// Returns null if no cache is loaded yet.
+    /// </summary>
+    public IReadOnlyList<EmailGroup>? RegroupCache(bool groupByDomain)
+    {
+        if (_cache.Messages.Count == 0) return null;
+        return groupByDomain ? BuildDomainGroups(_cache.Messages) : BuildAddressGroups(_cache.Messages);
+    }
+
+    // -------------------------------------------------------------------------
+    // Full fetch (first run)
+    // -------------------------------------------------------------------------
+
+    private async Task FullFetchAsync(
+        int maxMessages,
+        IProgress<(int Fetched, int Total)>? progress,
+        CancellationToken ct)
+    {
+        _cache.Clear();
+
+        // Grab the current historyId *before* we start paging so that any messages
+        // that arrive during the fetch are captured on the next incremental sync.
+        ulong startHistoryId = await GetCurrentHistoryIdAsync(ct);
+
         string? pageToken = null;
         int fetched = 0;
 
@@ -121,62 +154,194 @@ public sealed partial class GmailService
         {
             ct.ThrowIfCancellationRequested();
 
-            // ---- List a page of message IDs ----
             var listReq = _svc!.Users.Messages.List("me");
-            listReq.PageToken = pageToken;
-            listReq.MaxResults = Math.Min(500, maxMessages - fetched);
-            listReq.LabelIds = new Google.Apis.Util.Repeatable<string>(new[] { "INBOX" });
-            listReq.Fields = "nextPageToken,messages(id)";
+            listReq.PageToken   = pageToken;
+            listReq.MaxResults  = Math.Min(500, maxMessages - fetched);
+            listReq.LabelIds    = new Google.Apis.Util.Repeatable<string>(["INBOX"]);
+            listReq.Fields      = "nextPageToken,messages(id)";
 
             ListMessagesResponse listResp = await listReq.ExecuteAsync(ct);
             if (listResp.Messages is null) break;
 
-            // ---- Batch-fetch From headers in chunks of 100, throttled ----
-                    var ids = listResp.Messages.Select(m => m.Id).ToList();
-                    for (int offset = 0; offset < ids.Count; offset += 100)
-                    {
-                        ct.ThrowIfCancellationRequested();
-
-                        var chunk = ids.Skip(offset).Take(100).ToList();
-
-                        // Throttle to avoid hitting Gmail's QPM limit.
-                        // Process in small parallel groups with a delay between each group.
-                        const int concurrency = 5;
-                        for (int i = 0; i < chunk.Count; i += concurrency)
-                        {
-                            ct.ThrowIfCancellationRequested();
-                            var group = chunk.Skip(i).Take(concurrency).ToList();
-                            var tasks = group.Select(id => GetFromHeaderAsync(id, ct));
-                            string?[] headers = await Task.WhenAll(tasks);
-
-                            foreach (string? h in headers)
-                            {
-                                if (!string.IsNullOrWhiteSpace(h))
-                                {
-                                    string addr = ExtractAddress(h);
-                                    fromCounts.AddOrUpdate(addr, 1, (_, v) => v + 1);
-                                }
-                            }
-
-                            fetched += group.Count;
-                            progress?.Report((fetched, maxMessages));
-
-                            // Brief pause between groups to stay well under the QPM ceiling.
-                            if (i + concurrency < chunk.Count)
-                                await Task.Delay(200, ct);
-                        }
-                    }
+            var ids = listResp.Messages.Select(m => m.Id).ToList();
+            fetched = await FetchAndStoreFromHeadersAsync(ids, fetched, maxMessages, progress, ct);
 
             pageToken = listResp.NextPageToken;
         }
         while (!string.IsNullOrEmpty(pageToken) && fetched < maxMessages);
 
-        return groupByDomain ? BuildDomainGroups(fromCounts) : BuildAddressGroups(fromCounts);
+        _cache.Save(startHistoryId);
     }
 
     // -------------------------------------------------------------------------
-    // Private helpers
+    // Top-up fetch (cache exists but user wants more than we have)
     // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Fetches additional messages beyond what is already cached, up to
+    /// <paramref name="maxMessages"/> total.  Already-cached IDs are skipped so
+    /// no duplicate work is done.
+    /// </summary>
+    private async Task TopUpFetchAsync(
+        int maxMessages,
+        IProgress<(int Fetched, int Total)>? progress,
+        CancellationToken ct)
+    {
+        int needed  = maxMessages - _cache.Messages.Count;
+        int fetched = _cache.Messages.Count; // start the progress counter from where we are
+
+        string? pageToken = null;
+
+        do
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var listReq = _svc!.Users.Messages.List("me");
+            listReq.PageToken  = pageToken;
+            listReq.MaxResults = Math.Min(500, needed);
+            listReq.LabelIds   = new Google.Apis.Util.Repeatable<string>(["INBOX"]);
+            listReq.Fields     = "nextPageToken,messages(id)";
+
+            ListMessagesResponse listResp = await listReq.ExecuteAsync(ct);
+            if (listResp.Messages is null) break;
+
+            // Skip IDs we already have in cache.
+            var newIds = listResp.Messages
+                .Select(m => m.Id)
+                .Where(id => !_cache.Messages.ContainsKey(id))
+                .ToList();
+
+            fetched = await FetchAndStoreFromHeadersAsync(newIds, fetched, maxMessages, progress, ct);
+            needed -= newIds.Count;
+
+            pageToken = listResp.NextPageToken;
+        }
+        while (!string.IsNullOrEmpty(pageToken) && needed > 0);
+
+        // Save with the existing historyId — the history diff will update it.
+        if (_cache.LastHistoryId.HasValue)
+            _cache.Save(_cache.LastHistoryId.Value);
+    }
+
+    // -------------------------------------------------------------------------
+    // Incremental sync via History API
+    // -------------------------------------------------------------------------
+
+    private async Task ApplyHistoryDiffAsync(
+        ulong startHistoryId,
+        IProgress<(int Fetched, int Total)>? progress,
+        CancellationToken ct)
+    {
+        var added   = new List<string>();
+        var removed = new HashSet<string>(StringComparer.Ordinal);
+
+        string? pageToken = null;
+        ulong latestHistoryId = startHistoryId;
+
+        try
+        {
+            do
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var req = _svc!.Users.History.List("me");
+                req.StartHistoryId = startHistoryId;
+                req.PageToken      = pageToken;
+                req.LabelId        = "INBOX";
+
+                ListHistoryResponse resp = await req.ExecuteAsync(ct);
+
+                if (resp.HistoryId.HasValue)
+                    latestHistoryId = resp.HistoryId.Value;
+
+                if (resp.History is not null)
+                {
+                    foreach (var record in resp.History)
+                    {
+                        if (record.MessagesAdded is not null)
+                            foreach (var m in record.MessagesAdded)
+                                added.Add(m.Message.Id);
+
+                        if (record.MessagesDeleted is not null)
+                            foreach (var m in record.MessagesDeleted)
+                                removed.Add(m.Message.Id);
+                    }
+                }
+
+                pageToken = resp.NextPageToken;
+            }
+            while (!string.IsNullOrEmpty(pageToken));
+        }
+        catch (Google.GoogleApiException ex) when (ex.Error?.Code == 404)
+        {
+            // historyId too old — fall back to a full fetch.
+            await FullFetchAsync(5_000, progress, ct);
+            return;
+        }
+
+        // Remove first so a message that was added-then-deleted isn't fetched at all.
+        foreach (string id in removed)
+            _cache.Messages.Remove(id);
+
+        // Only fetch IDs we don't already have.
+        var toFetch = added.Where(id => !_cache.Messages.ContainsKey(id)).ToList();
+        await FetchAndStoreFromHeadersAsync(toFetch, 0, toFetch.Count, progress, ct);
+
+        _cache.Save(latestHistoryId);
+    }
+
+    // -------------------------------------------------------------------------
+    // Shared fetch helper
+    // -------------------------------------------------------------------------
+
+    private async Task<int> FetchAndStoreFromHeadersAsync(
+        List<string> ids,
+        int fetchedSoFar,
+        int total,
+        IProgress<(int Fetched, int Total)>? progress,
+        CancellationToken ct)
+    {
+        const int concurrency = 5;
+        int fetched = fetchedSoFar;
+
+        for (int offset = 0; offset < ids.Count; offset += 100)
+        {
+            var chunk = ids.Skip(offset).Take(100).ToList();
+
+            for (int i = 0; i < chunk.Count; i += concurrency)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var group = chunk.Skip(i).Take(concurrency).ToList();
+                (string Id, string? From)[] results = await Task.WhenAll(
+                    group.Select(async id => (Id: id, From: await GetFromHeaderAsync(id, ct))));
+
+                foreach (var (id, from) in results)
+                    if (!string.IsNullOrWhiteSpace(from))
+                        _cache.Messages[id] = ExtractAddress(from);
+
+                fetched += group.Count;
+                progress?.Report((fetched, total));
+
+                if (i + concurrency < chunk.Count)
+                    await Task.Delay(200, ct);
+            }
+        }
+
+        return fetched;
+    }
+
+    // -------------------------------------------------------------------------
+    // Gmail helpers
+    // -------------------------------------------------------------------------
+
+    private async Task<ulong> GetCurrentHistoryIdAsync(CancellationToken ct)
+    {
+        var req = _svc!.Users.GetProfile("me");
+        req.Fields = "historyId";
+        var profile = await req.ExecuteAsync(ct);
+        return profile.HistoryId ?? 0;
+    }
 
     private async Task<string?> GetFromHeaderAsync(string messageId, CancellationToken ct)
     {
@@ -187,7 +352,7 @@ public sealed partial class GmailService
             {
                 var req = _svc!.Users.Messages.Get("me", messageId);
                 req.Format = UsersResource.MessagesResource.GetRequest.FormatEnum.Metadata;
-                req.MetadataHeaders = new Google.Apis.Util.Repeatable<string>(new[] { "From" });
+                req.MetadataHeaders = new Google.Apis.Util.Repeatable<string>(["From"]);
                 req.Fields = "payload/headers";
 
                 Message msg = await req.ExecuteAsync(ct);
@@ -195,86 +360,76 @@ public sealed partial class GmailService
                     .FirstOrDefault(h => string.Equals(h.Name, "From", StringComparison.OrdinalIgnoreCase))
                     ?.Value;
             }
-            catch (Google.GoogleApiException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.TooManyRequests
-                                                    || (int)ex.HttpStatusCode == 429
-                                                    || ex.Error?.Code == 403)
+            catch (Google.GoogleApiException ex) when (
+                ex.HttpStatusCode == System.Net.HttpStatusCode.TooManyRequests ||
+                (int)ex.HttpStatusCode == 429 ||
+                ex.Error?.Code == 403)
             {
                 if (attempt == 4) return null;
                 await Task.Delay(delayMs, ct);
-                delayMs *= 2; // exponential backoff
+                delayMs *= 2;
             }
-            catch (Google.GoogleApiException)
-            {
-                return null;
-            }
-            catch (System.Net.Http.HttpRequestException)
-            {
-                return null;
-            }
+            catch (Google.GoogleApiException) { return null; }
+            catch (System.Net.Http.HttpRequestException) { return null; }
         }
         return null;
     }
 
-    private static IReadOnlyList<EmailGroup> BuildAddressGroups(
-        ConcurrentDictionary<string, long> fromCounts)
+    // -------------------------------------------------------------------------
+    // Grouping
+    // -------------------------------------------------------------------------
+
+    private static IReadOnlyList<EmailGroup> BuildAddressGroups(Dictionary<string, string> messages)
     {
-        return fromCounts
-            .Select(kv => new EmailGroup
+        return messages.Values
+            .GroupBy(addr => addr, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new EmailGroup
             {
-                Key = kv.Key,
-                DisplayName = kv.Key,
-                EmailCount = kv.Value,
-                IsDomain = false,
+                Key = g.Key, DisplayName = g.Key,
+                EmailCount = g.LongCount(), IsDomain = false,
             })
             .OrderByDescending(g => g.EmailCount)
             .ToList();
     }
 
-    private static IReadOnlyList<EmailGroup> BuildDomainGroups(
-        ConcurrentDictionary<string, long> fromCounts)
+    private static IReadOnlyList<EmailGroup> BuildDomainGroups(Dictionary<string, string> messages)
     {
-        // Aggregate by domain — mutate the existing sub-list to avoid O(n²) allocations.
         var domains = new Dictionary<string, (long Total, List<EmailGroup> Subs)>(StringComparer.OrdinalIgnoreCase);
 
-        foreach ((string addr, long count) in fromCounts)
+        foreach (var addr in messages.Values)
         {
             string domain = ExtractDomain(addr);
-
             if (!domains.TryGetValue(domain, out var entry))
             {
                 entry = (0, []);
                 domains[domain] = entry;
             }
-
-            entry.Subs.Add(new EmailGroup
-            {
-                Key = addr,
-                DisplayName = addr,
-                EmailCount = count,
-                IsDomain = false,
-            });
-            domains[domain] = (entry.Total + count, entry.Subs);
+            var existing = entry.Subs.FirstOrDefault(s => s.Key == addr);
+            if (existing is null)
+                entry.Subs.Add(new EmailGroup { Key = addr, DisplayName = addr, EmailCount = 1, IsDomain = false });
+            else
+                existing.EmailCount++;
+            domains[domain] = (entry.Total + 1, entry.Subs);
         }
 
         return domains
             .Select(kv => new EmailGroup
             {
-                Key = kv.Key,
-                DisplayName = kv.Key,
-                EmailCount = kv.Value.Total,
-                IsDomain = true,
+                Key = kv.Key, DisplayName = kv.Key,
+                EmailCount = kv.Value.Total, IsDomain = true,
                 SubGroups = [.. kv.Value.Subs.OrderByDescending(s => s.EmailCount)],
             })
             .OrderByDescending(g => g.EmailCount)
             .ToList();
     }
 
-    // ---- String parsing ----
+    // -------------------------------------------------------------------------
+    // String parsing
+    // -------------------------------------------------------------------------
 
-    /// <summary>Extracts a bare email address from a "Display Name &lt;addr&gt;" or plain "addr" string.</summary>
     private static string ExtractAddress(string from)
     {
-        Match m = AngleBracketRegex().Match(from);
+        Match m = FromAngleBracketRegex().Match(from);
         string addr = m.Success ? m.Groups[1].Value : from;
         return addr.Trim().ToLowerInvariant();
     }
@@ -286,7 +441,7 @@ public sealed partial class GmailService
     }
 
     [GeneratedRegex(@"<([^>]+)>", RegexOptions.Compiled)]
-    private static partial Regex AngleBracketRegex();
+    private static partial Regex FromAngleBracketRegex();
 
     private void EnsureAuthenticated()
     {
@@ -294,3 +449,4 @@ public sealed partial class GmailService
             throw new InvalidOperationException("Not authenticated. Call AuthenticateAsync first.");
     }
 }
+
